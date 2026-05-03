@@ -1,11 +1,11 @@
 import * as fs from "fs";
 import ky from "ky";
-import { pull } from "./helpers/pull";
-import { getDriveClient } from "./helpers/drive";
+import { pull } from "../../helpers/pull";
+import { getDriveClient } from "../../helpers/drive";
 
 const mockApp = {
 	vault: {
-		getName: () => "TestVault",
+		getName: () => "lekaha",
 		adapter: {
 			exists: async (p: string) => fs.existsSync(p),
 			stat: async (p: string) => {
@@ -127,10 +127,25 @@ async function main() {
 	const settings = JSON.parse(fs.readFileSync(dataFile, "utf-8"));
 	
 	if (fs.existsSync(tokenFile)) {
-		const token = fs.readFileSync(tokenFile, "utf-8").trim();
-		if (token) {
-			settings.refreshToken = token;
-			console.log(`Using refresh token from ${tokenFile}`);
+		const tokenContent = fs.readFileSync(tokenFile, "utf-8").trim();
+		if (tokenContent) {
+			try {
+				const tokenJson = JSON.parse(tokenContent);
+				if (tokenJson.refreshToken) {
+					settings.refreshToken = tokenJson.refreshToken;
+				}
+				if (tokenJson.clientId) {
+					settings.clientId = tokenJson.clientId;
+				}
+				if (tokenJson.clientSecret) {
+					settings.clientSecret = tokenJson.clientSecret;
+				}
+				console.log(`Using credentials from ${tokenFile}`);
+			} catch {
+				// Legacy format - just the refresh token string
+				settings.refreshToken = tokenContent;
+				console.log(`Using refresh token from ${tokenFile} (legacy format)`);
+			}
 		}
 	}
 

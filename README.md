@@ -5,8 +5,8 @@ This is an unofficial sync plugin for Obsidian, specifically for Google Drive.
 ## Disclaimer
 
 -   This is **not** the [official sync service](https://obsidian.md/sync) provided by Obsidian
--   This plugin communicates with external servers, namely the Google Drive API and [https://ogd.richardxiong.com](https://ogd.richardxiong.com)
-    -   The details of this communication are explained at the bottom of the notes section
+-   This plugin communicates with the Google Drive API directly. When using the BYOK (Bring Your Own Key) authentication flow, no third-party servers are involved.
+    -   The legacy authentication method (via `https://ogd.richardxiong.com`) is still supported for existing users, but new users should use the BYOK flow described below.
 
 ## Caution
 
@@ -51,18 +51,52 @@ This is an unofficial sync plugin for Obsidian, specifically for Google Drive.
 -   Do **NOT** change the Obsidian configuration folder
     -   If you really want to, make a new vault, change the folder, enable the plugin, and copy your files over (you can move the contents of .obsidian to the new folder through file explorer)
 -   This only accesses the Google Drive API to sync files and does not access or store any data outside of the user's device
--   This only accesses [https://ogd.richardxiong.com](https://ogd.richardxiong.com) to convert refresh tokens into access tokens (while hiding the client secret) and to check internet connectivity with a simple ping request
+-   When using the BYOK flow, all authentication happens directly between your device and Google's OAuth2 servers — no third-party server handles your tokens
+-   The legacy authentication method (via `https://ogd.richardxiong.com`) is still supported for existing users who prefer the previous flow
 
 ## Setup
 
-Note: Instructions are also on this plugin's homepage with images at [https://ogd.richardxiong.com](https://ogd.richardxiong.com)
+### Method 1: BYOK (Bring Your Own Key) — **Recommended for new users**
+
+This method authenticates directly with Google's OAuth 2.0 servers — no third-party server is involved.
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project (or select an existing one)
+3. Enable the **Google Drive API** for your project:
+   - Navigate to **APIs & Services > Library**
+   - Search for "Google Drive API" and click **Enable**
+4. Configure the **OAuth consent screen**:
+   - Navigate to **APIs & Services > OAuth consent screen**
+   - Select "External" user type (unless you have a Google Workspace account)
+   - Fill in the required fields (app name, user support email, developer contact)
+   - Add the scope `https://www.googleapis.com/auth/drive`
+   - Save and continue (you can skip test users for personal use)
+5. Create **OAuth 2.0 credentials**:
+   - Navigate to **APIs & Services > Credentials**
+   - Click **Create Credentials > OAuth client ID**
+   - Application type: **Other** (not Web application)
+   - Give it a name (e.g., "Obsidian Drive Sync")
+   - Click **Create**
+6. Copy the **Client ID** from the credentials page
+7. Enable the **Google Drive Sync** plugin in Obsidian
+8. Paste the Client ID into the "Google Client ID" field in the plugin settings
+9. Add `http://127.0.0.1:18412` as an **Authorized redirect URI** in the Google Cloud Console (under your OAuth client ID settings)
+10. Click **Authenticate** in plugin settings — your browser will open for Google authentication and a local server will listen for the callback on port 18412
+11. Grant consent in Google — you'll see a success page in your browser and a confirmation notice in Obsidian
+12. Reload the Obsidian app
+
+### Method 2: Legacy Authentication — **For existing users**
+
+If you already have a refresh token from the previous method, you can continue using it.
 
 1. Visit this plugin's homepage at [https://ogd.richardxiong.com](https://ogd.richardxiong.com)
 2. Click `Sign In` at the top right and log in with your Google account
 3. Copy the refresh token that appears after logging in
 4. Enable the Google Drive Sync plugin in Obsidian
-5. Paste the refresh token into the plugin settings in Obsidian
+5. Paste the refresh token into the "Legacy Refresh Token" field in the plugin settings
 6. Reload the Obsidian app
+
+> **Note:** The legacy method is deprecated. New users should use Method 1 (BYOK). Existing users can continue using the legacy method but are encouraged to migrate to BYOK for improved privacy and reliability.
 
 ## Use
 

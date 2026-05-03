@@ -1,5 +1,5 @@
 import ky from "ky";
-import ObsidianGoogleDrive from "main";
+import ObsidianGoogleDrive from "../main";
 import { getDriveKy } from "./ky";
 import { TAbstractFile, TFolder } from "obsidian";
 
@@ -11,6 +11,17 @@ export interface FileMetadata {
 	starred: boolean;
 	properties: Record<string, string>;
 	modifiedTime: string;
+	parents?: string[];
+	ownedByMe?: boolean;
+	shortcutDetails?: {
+		targetId: string;
+		targetMimeType: string;
+	};
+}
+
+export interface FolderInfo {
+	name: string;
+	parents: string[];
 }
 
 type StringSearch = string | { contains: string } | { not: string };
@@ -69,10 +80,165 @@ const queryHandlers = {
 export const fileListToMap = (files: { id: string; name: string }[]) =>
 	Object.fromEntries(files.map(({ id, name }) => [name, id]));
 
+export const buildFolderIdToInfo = (
+	files: FileMetadata[]
+): Map<string, FolderInfo> => {
+	const map = new Map<string, FolderInfo>();
+	for (const file of files) {
+		if (file.mimeType === folderMimeType && file.parents) {
+			map.set(file.id, {
+				name: file.name,
+				parents: file.parents,
+			});
+		}
+	}
+	return map;
+};
+
+export const resolvePathFromParents = (
+	file: FileMetadata,
+	rootFolderId: string,
+	folderIdToInfo: Map<string, FolderInfo>
+): string | null => {
+	if (file.properties?.path) {
+		console.log(`[PULL DIAGNOSTIC] Path found in properties: ${file.properties.path}`);	
+		return file.properties.path;
+	}
+
+	if (!file.parents || file.parents.length === 0) {
+		console.log(`[PULL DIAGNOSTIC] No parents for ${file.name}`);
+		return null;
+	}
+
+	const pathSegments: string[] = [];
+	const visited = new Set<string>();
+	let currentId: string | undefined = file.parents[0];
+	let hops = 0;
+	const maxHops = 50;
+
+	pathSegments.unshift(file.name);
+
+	console.log(`[PULL DIAGNOSTIC] Initial path segments: ${pathSegments.join("/")}, currentId: ${currentId}`);
+
+	while (currentId && hops < maxHops) {
+		console.log(`[PULL DIAGNOSTIC] Path segments: ${pathSegments.join("/")}, currentId: ${currentId}`);
+		if (currentId === rootFolderId) {
+			return pathSegments.join("/");
+		}
+
+		if (visited.has(currentId)) {
+			console.warn(
+				`[OGD] Circular parent reference detected for file "${file.name}" (ID: ${file.id})`
+			);
+			return null;
+		}
+		visited.add(currentId);
+
+		const folderInfo = folderIdToInfo.get(currentId);
+		if (!folderInfo) {
+			console.log(`[PULL DIAGNOSTIC] No folderInfo for ${currentId}`);
+			return null;
+		}
+
+		pathSegments.unshift(folderInfo.name);
+
+		if (!folderInfo.parents || folderInfo.parents.length === 0) {
+			console.log(`[PULL DIAGNOSTIC] No parents for ${currentId} (${folderInfo.name})`);
+			break;
+		}
+		currentId = folderInfo.parents[0];
+		hops++;
+	}
+
+	if (hops >= maxHops) {
+		console.warn(
+			`[OGD] Orphaned file detected: "${file.name}" (ID: ${file.id}) - parent chain exceeded ${maxHops} hops`
+		);
+		return null;
+	}
+
+	return pathSegments.join("/");
+};
+
+export const searchFilesRecursive = async (
+	folderId: string,
+	folderIdToInfo: Map<string, FolderInfo>,
+	drive: ReturnType<typeof getDriveKy>,
+	filesAccumulator: FileMetadata[] = [],
+	depth = 0
+): Promise<FileMetadata[]> => {
+	const children = await drive.get(
+		`drive/v3/files?fields=nextPageToken,files(id,name,mimeType,parents,properties,modifiedTime,ownedByMe,shortcutDetails)&pageSize=1000&q=${encodeURIComponent(`'${folderId}' in parents and trashed=false`)}&orderBy=name desc&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=user`
+	).json<any>();
+
+	const indent = "  ".repeat(depth);
+	if (!children) {
+		console.log(`[Drive API] ${indent}Searched folder ${folderId}, found 0 items`);
+		return filesAccumulator;
+	}
+	console.log(`[Drive API] ${indent}Searched folder ${folderId}, found ${children.files?.length || 0} items`);
+
+	let allChildren = children.files as FileMetadata[];
+	let nextPageToken = children.nextPageToken;
+
+	while (nextPageToken) {
+		const nextPage = await drive.get(
+			`drive/v3/files?fields=nextPageToken,files(id,name,mimeType,parents,properties,modifiedTime,ownedByMe,shortcutDetails)&pageSize=1000&q=${encodeURIComponent(`'${folderId}' in parents and trashed=false`)}&orderBy=name desc&pageToken=${nextPageToken}&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=user`
+		).json<any>();
+		if (!nextPage) break;
+		allChildren.push(...nextPage.files);
+		nextPageToken = nextPage.nextPageToken;
+	}
+
+	for (const f of allChildren) {
+		if (f.mimeType === "application/vnd.google-apps.shortcut") {
+			console.log(`[Drive API] ${indent}  ⚠️ "${f.name}" (ID: ${f.id}) is a shortcut${f.ownedByMe !== undefined ? `, ownedByMe=${f.ownedByMe}` : ''}${f.shortcutDetails ? `, target=${f.shortcutDetails.targetId} (type: ${f.shortcutDetails.targetMimeType})` : ''}`);
+		} else if (f.ownedByMe === false) {
+			console.log(`[Drive API] ${indent}  ⚠️ "${f.name}" (ID: ${f.id}) is NOT owned by you (shared file)`);
+		}
+	}
+
+	filesAccumulator.push(...allChildren);
+
+	const newFolders = buildFolderIdToInfo(allChildren);
+	for (const [id, info] of newFolders) {
+		folderIdToInfo.set(id, info);
+	}
+	
+	for (const f of allChildren) {
+		if (f.mimeType === "application/vnd.google-apps.shortcut" && f.shortcutDetails?.targetMimeType === folderMimeType && f.parents) {
+			folderIdToInfo.set(f.id, {
+				name: f.name,
+				parents: f.parents,
+			});
+		}
+	}
+	if (!folderIdToInfo.has(folderId)) {
+		const currentFolder = allChildren.find(f => f.id === folderId);
+		if (currentFolder && currentFolder.mimeType === folderMimeType && currentFolder.parents) {
+			folderIdToInfo.set(folderId, {
+				name: currentFolder.name,
+				parents: currentFolder.parents,
+			});
+		}
+	}
+
+	const subfolders = allChildren.filter(
+		(f) => f.mimeType === folderMimeType || (f.mimeType === "application/vnd.google-apps.shortcut" && f.shortcutDetails?.targetMimeType === folderMimeType)
+	);
+
+	for (const subfolder of subfolders) {
+		const targetId = subfolder.mimeType === "application/vnd.google-apps.shortcut" ? subfolder.shortcutDetails!.targetId : subfolder.id;
+		await searchFilesRecursive(targetId, folderIdToInfo, drive, filesAccumulator, depth + 1);
+	}
+
+	return filesAccumulator;
+};
+
 export const getDriveClient = (t: ObsidianGoogleDrive) => {
 	const drive = getDriveKy(t);
 
-	const getQuery = (matches: QueryMatch[]) =>
+	const getQuery = (matches: QueryMatch[], includeVaultProperty = false) =>
 		encodeURIComponent(
 			`(${matches
 				.map((match) => {
@@ -94,7 +260,11 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 				})
 				.join(
 					" or "
-				)}) and trashed=false and properties has { key='vault' and value='${t.app.vault.getName()}' }`
+				)}) and trashed=false${
+				includeVaultProperty
+					? ` and properties has { key='vault' and value='${t.app.vault.getName()}' }`
+					: ""
+			}`
 		);
 
 	const paginateFiles = async ({
@@ -110,25 +280,27 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 			"description",
 			"properties",
 		],
+		includeVaultProperty = false,
 	}: {
 		matches?: QueryMatch[];
 		order?: "ascending" | "descending";
 		pageToken?: string;
 		pageSize?: number;
 		include?: (keyof FileMetadata)[];
+		includeVaultProperty?: boolean;
 	}) => {
 		const files = await drive
 			.get(
 				`drive/v3/files?fields=nextPageToken,files(${include.join(
 					","
 				)})&pageSize=${pageSize}&q=${
-					matches ? getQuery(matches) : "trashed=false"
+					matches ? getQuery(matches, includeVaultProperty) : "trashed=false"
 				}${
 					matches?.find(({ query }) => query)
 						? ""
 						: "&orderBy=name" +
 						  (order === "ascending" ? "" : " desc")
-				}${pageToken ? "&pageToken=" + pageToken : ""}`
+				}${pageToken ? "&pageToken=" + pageToken : ""}&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=user`
 			)
 			.json<any>();
 		if (!files) return;
@@ -143,10 +315,12 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 			matches?: QueryMatch[];
 			order?: "ascending" | "descending";
 			include?: (keyof FileMetadata)[];
+			includeVaultProperty?: boolean;
 		},
 		includeObsidian = false
 	) => {
-		const files = await paginateFiles({ ...data, pageSize: 1000 });
+		const includeVP = data.includeVaultProperty ?? true;
+		const files = await paginateFiles({ ...data, pageSize: 1000, includeVaultProperty: includeVP });
 		if (!files) return;
 
 		while (files.nextPageToken) {
@@ -330,6 +504,11 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 		drive.get(`drive/v3/files/${id}`).json<FileMetadata>();
 
 	const idFromPath = async (path: string) => {
+		const idFromMapping = Object.entries(t.settings.driveIdToPath).find(
+			([, p]) => p === path
+		)?.[0];
+		if (idFromMapping) return idFromMapping;
+
 		const files = await searchFiles({
 			matches: [{ properties: { path } }],
 		});
@@ -338,14 +517,31 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 	};
 
 	const idsFromPaths = async (paths: string[]) => {
-		const files = await searchFiles({
-			matches: paths.map((path) => ({ properties: { path } })),
+		const idToPath = t.settings.driveIdToPath;
+		const fromMapping = paths
+			.map((path) => {
+				const id = Object.entries(idToPath).find(([, p]) => p === path)?.[0];
+				return id ? { id, path } : null;
+			})
+			.filter(Boolean) as { id: string; path: string }[];
+
+		const unmappedPaths = paths.filter(
+			(p) => !fromMapping.some((m) => m.path === p)
+		);
+
+		if (!unmappedPaths.length) return fromMapping;
+
+		const fromSearch = await searchFiles({
+			matches: unmappedPaths.map((path) => ({ properties: { path } })),
 		});
-		if (!files) return;
-		return files.map((file) => ({
+		if (!fromSearch) return fromMapping.length ? fromMapping : undefined;
+
+		const fromSearchMapped = fromSearch.map((file) => ({
 			id: file.id,
 			path: file.properties.path,
 		}));
+
+		return [...fromMapping, ...fromSearchMapped];
 	};
 
 	const batchDelete = async (ids: string[]) => {
@@ -388,7 +584,7 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 	};
 
 	const getChanges = async (startToken: string) => {
-		if (!startToken) return [];
+		if (!startToken) return { changes: [], newStartPageToken: "" };
 
 		const request = (token: string) =>
 			drive
@@ -403,21 +599,27 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 
 		const result = await request(startToken);
 		if (!result) return;
+
+		let newStartPageToken = result.newStartPageToken;
+
 		while (result.nextPageToken) {
 			const nextPage = await request(result.nextPageToken);
 			if (!nextPage) return;
 			result.changes.push(...nextPage.changes);
-			result.newStartPageToken = nextPage.newStartPageToken;
+			newStartPageToken = nextPage.newStartPageToken;
 			result.nextPageToken = nextPage.nextPageToken;
 		}
 
-		return result.changes as {
-			kind: string;
-			removed: boolean;
-			file: FileMetadata;
-			fileId: string;
-			time: string;
-		}[];
+		return {
+			changes: result.changes as {
+				kind: string;
+				removed: boolean;
+				file: FileMetadata;
+				fileId: string;
+				time: string;
+			}[],
+			newStartPageToken,
+		};
 	};
 
 	const deleteFilesMinimumOperations = async (files: TAbstractFile[]) => {
@@ -523,13 +725,20 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 		checkConnection,
 		deleteFilesMinimumOperations,
 		getConfigFilesToSync,
+		resolvePathFromParents,
+		searchFilesRecursive,
 	};
 };
 
 export const checkConnection = async () => {
 	try {
-		const result = await ky.get("https://ogd.richardxiong.com/api/ping");
-		return result.ok;
+		if (!navigator.onLine) return false;
+		// Use a CORS-friendly endpoint that returns proper Access-Control-Allow-Origin headers
+		await ky.get(
+			"https://www.googleapis.com/discovery/v1/apis",
+			{ timeout: 5000 }
+		);
+		return true;
 	} catch {
 		return false;
 	}
@@ -563,16 +772,17 @@ export const foldersToBatches: {
 	(folders: string[]): string[][];
 	(folders: TFolder[]): TFolder[][];
 } = (folders) => {
-	const batches: (typeof folders)[] = new Array(
-		Math.max(
-			...folders.map(
-				(folder) =>
-					(folder instanceof TFolder ? folder.path : folder).split(
-						"/"
-					).length
-			)
+	if (folders.length === 0) return [];
+	const maxDepth = Math.max(
+		...folders.map(
+			(folder) =>
+				(folder instanceof TFolder ? folder.path : folder).split(
+					"/"
+				).length
 		)
-	)
+	);
+
+	const batches: (typeof folders)[] = new Array(maxDepth)
 		.fill(0)
 		.map(() => []);
 
