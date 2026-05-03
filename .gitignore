@@ -18,5 +18,8 @@ main.js
 # obsidian
 data.json
 
+# Test OAuth token file
+.test-oauth-token
+
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store

@@ -2,6 +2,7 @@ import ky, { Hooks } from "ky";
 import ObsidianGoogleDrive from "main";
 import { Notice } from "obsidian";
 import { checkConnection } from "./drive";
+import { refreshAccessTokenDirect } from "./oauth";
 
 const getHooks = (t: ObsidianGoogleDrive): Hooks => ({
 	beforeRequest: [
@@ -37,10 +38,17 @@ export const getDriveKy = (t: ObsidianGoogleDrive) => {
 	});
 };
 
+export { ky };
+
 export const refreshAccessToken = async (t: ObsidianGoogleDrive) => {
 	try {
+		const isPkce = !!t.settings.clientId;
+
+		if (isPkce) {
+			return refreshAccessTokenDirect(t);
+		}
 		const { expires_in, access_token } = await ky
-			.post("https://ogd.richardxiong.com/api/access", {
+			.post("https://example-oauth.com/api/access", {
 				json: { refresh_token: t.settings.refreshToken },
 			})
 			.json<any>();
