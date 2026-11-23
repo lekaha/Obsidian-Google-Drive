@@ -22,8 +22,9 @@ const getHooks = (t: ObsidianGoogleDrive): Hooks => ({
 	afterResponse: [
 		async (request, options, response) => {
 			if (!response.ok) {
-				new Notice(`Error: ${await response.text()}`);
-				return new Response();
+				const errorText = await response.clone().text().catch(() => response.statusText);
+				console.error(`[OGD] HTTP ${response.status} on ${request.method} ${request.url}: ${errorText}`);
+				new Notice(`Google Drive API error (${response.status}): ${errorText.slice(0, 200)}`);
 			}
 			return response;
 		},

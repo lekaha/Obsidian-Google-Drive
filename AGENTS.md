@@ -4,9 +4,13 @@ This file contains high-signal, repository-specific context to help agents work 
 
 ## 🛠️ Build & Development Workflow
 
-- **Dev mode (Watch):** `npm run dev` (Runs `node esbuild.config.mjs` directly).
-- **Production Build:** `npm run build` (Runs `tsc -noEmit -skipLibCheck` followed by `esbuild.config.mjs production`).
-- **Releasing/Versioning:** `npm run version`. This script (`version-bump.mjs`) reads the `version` from `package.json` (via `npm_package_version`), updates `manifest.json`, adds a mapping to `versions.json`, and stages them via git. 
+Tool versions and repository tasks are declared in `mise.toml`. Run `mise install` to install the pinned Node version and `mise tasks` to list all available tasks. All tasks wrap standard `npm` / `npx` commands, so the repo still works without `mise`.
+
+- **Install Dependencies:** `mise run bootstrap` (`npm install`).
+- **Dev mode (Watch):** `mise run dev` (`npm run dev` — runs `node esbuild.config.mjs`).
+- **Production Build:** `mise run build` (`npm run build` — runs `tsc -noEmit -skipLibCheck` followed by `node esbuild.config.mjs production`).
+- **CI Checks:** `mise run check` (runs everything CI runs, currently `build`).
+- **Releasing/Versioning:** `mise run version` (`npm run version`). This script (`version-bump.mjs`) reads the `version` from `package.json` (via `npm_package_version`), updates `manifest.json`, adds a mapping to `versions.json`, and stages them via git.
 
 ## 📐 Architecture & Sync Logic
 
@@ -29,8 +33,9 @@ The core philosophy is **Local Priority with Change Tracking**.
 
 ## 💡 Important Constraints
 
-- **Testing Infrastructure:** The `test/` directory contains standalone testing and diagnostics tools that can be run independently of Obsidian via `npx tsx`.
-  - `test/integration/test-oauth.ts` - Tests the new PKCE authentication flow directly against Google's OAuth 2.0 servers (also runnable via `npm run test-oauth`)
+- **Testing Infrastructure:** The `test/` directory contains standalone testing and diagnostics tools that can be run independently of Obsidian via `npx tsx` (or via `mise run`):
+  - `test/unit/test-sync-safety.ts` - Standalone sync safety unit tests (`mise run test:unit`)
+  - `test/integration/test-oauth.ts` - Tests the new PKCE authentication flow directly against Google's OAuth 2.0 servers (`mise run test:oauth` / `npm run test-oauth`)
   - `test/integration/test-pull-standalone.ts` - Standalone testing of the pull/sync logic
   - `test/diagnostics/` - Debugging scripts for diagnosing drive sync issues (e.g., missing files, query validation)
   - These tools use `getDriveKy(t)` from `helpers/ky.ts` to interact with the Drive API independently.

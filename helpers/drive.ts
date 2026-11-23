@@ -13,6 +13,7 @@ export interface FileMetadata {
 	modifiedTime: string;
 	parents?: string[];
 	ownedByMe?: boolean;
+	trashed?: boolean;
 	shortcutDetails?: {
 		targetId: string;
 		targetMimeType: string;
@@ -52,28 +53,65 @@ const WHITELISTED_PLUGIN_FILES = [
 	"data.json",
 ];
 
+export const escapeDriveQueryValue = (value: string) =>
+	value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+
+export const isPluginDataJson = (path: string, configDir: string) =>
+	path === `${configDir}/plugins/google-drive-sync/data.json`;
+
+export const areArrayBuffersEqual = (a: ArrayBuffer, b: ArrayBuffer): boolean => {
+	if (a.byteLength !== b.byteLength) return false;
+	const viewA = new Uint8Array(a);
+	const viewB = new Uint8Array(b);
+	for (let i = 0; i < viewA.length; i++) {
+		if (viewA[i] !== viewB[i]) return false;
+	}
+	return true;
+};
+
+export const buildConflictPath = (
+	path: string,
+	date: Date = new Date()
+): string => {
+	const stamp = date
+		.toISOString()
+		.replace(/[:.]/g, "-")
+		.replace("T", "_")
+		.slice(0, 19);
+	const lastSlash = path.lastIndexOf("/");
+	const dir = lastSlash >= 0 ? path.slice(0, lastSlash + 1) : "";
+	const fileName = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+	const lastDot = fileName.lastIndexOf(".");
+	if (lastDot > 0) {
+		const base = fileName.slice(0, lastDot);
+		const ext = fileName.slice(lastDot);
+		return `${dir}${base} (conflict ${stamp})${ext}`;
+	}
+	return `${dir}${fileName} (conflict ${stamp})`;
+};
+
 const stringSearchToQuery = (search: StringSearch) => {
-	if (typeof search === "string") return `='${search}'`;
-	if ("contains" in search) return ` contains '${search.contains}'`;
-	if ("not" in search) return `!='${search.not}'`;
+	if (typeof search === "string") return `='${escapeDriveQueryValue(search)}'`;
+	if ("contains" in search) return ` contains '${escapeDriveQueryValue(search.contains)}'`;
+	if ("not" in search) return `!='${escapeDriveQueryValue(search.not)}'`;
 };
 
 const queryHandlers = {
 	name: (name: StringSearch) => "name" + stringSearchToQuery(name),
 	mimeType: (mimeType: StringSearch) =>
 		"mimeType" + stringSearchToQuery(mimeType),
-	parent: (parent: string) => `'${parent}' in parents`,
+	parent: (parent: string) => `'${escapeDriveQueryValue(parent)}' in parents`,
 	starred: (starred: boolean) => `starred=${starred}`,
-	query: (query: string) => `fullText contains '${query}'`,
+	query: (query: string) => `fullText contains '${escapeDriveQueryValue(query)}'`,
 	properties: (properties: Record<string, string>) =>
 		Object.entries(properties).map(
 			([key, value]) =>
-				`properties has { key='${key}' and value='${value}' }`
+				`properties has { key='${escapeDriveQueryValue(key)}' and value='${escapeDriveQueryValue(value)}' }`
 		),
 	modifiedTime: (modifiedTime: DateComparison) => {
-		if ("eq" in modifiedTime) return `modifiedTime='${modifiedTime.eq}'`;
-		if ("gt" in modifiedTime) return `modifiedTime>'${modifiedTime.gt}'`;
-		if ("lt" in modifiedTime) return `modifiedTime<'${modifiedTime.lt}'`;
+		if ("eq" in modifiedTime) return `modifiedTime='${escapeDriveQueryValue(modifiedTime.eq)}'`;
+		if ("gt" in modifiedTime) return `modifiedTime>'${escapeDriveQueryValue(modifiedTime.gt)}'`;
+		if ("lt" in modifiedTime) return `modifiedTime<'${escapeDriveQueryValue(modifiedTime.lt)}'`;
 	},
 };
 
@@ -101,12 +139,10 @@ export const resolvePathFromParents = (
 	folderIdToInfo: Map<string, FolderInfo>
 ): string | null => {
 	if (file.properties?.path) {
-		console.log(`[PULL DIAGNOSTIC] Path found in properties: ${file.properties.path}`);	
 		return file.properties.path;
 	}
 
 	if (!file.parents || file.parents.length === 0) {
-		console.log(`[PULL DIAGNOSTIC] No parents for ${file.name}`);
 		return null;
 	}
 
@@ -118,10 +154,7 @@ export const resolvePathFromParents = (
 
 	pathSegments.unshift(file.name);
 
-	console.log(`[PULL DIAGNOSTIC] Initial path segments: ${pathSegments.join("/")}, currentId: ${currentId}`);
-
 	while (currentId && hops < maxHops) {
-		console.log(`[PULL DIAGNOSTIC] Path segments: ${pathSegments.join("/")}, currentId: ${currentId}`);
 		if (currentId === rootFolderId) {
 			return pathSegments.join("/");
 		}
@@ -136,14 +169,12 @@ export const resolvePathFromParents = (
 
 		const folderInfo = folderIdToInfo.get(currentId);
 		if (!folderInfo) {
-			console.log(`[PULL DIAGNOSTIC] No folderInfo for ${currentId}`);
 			return null;
 		}
 
 		pathSegments.unshift(folderInfo.name);
 
 		if (!folderInfo.parents || folderInfo.parents.length === 0) {
-			console.log(`[PULL DIAGNOSTIC] No parents for ${currentId} (${folderInfo.name})`);
 			break;
 		}
 		currentId = folderInfo.parents[0];
@@ -262,7 +293,7 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 					" or "
 				)}) and trashed=false${
 				includeVaultProperty
-					? ` and properties has { key='vault' and value='${t.app.vault.getName()}' }`
+					? ` and properties has { key='vault' and value='${escapeDriveQueryValue(t.app.vault.getName())}' }`
 					: ""
 			}`
 		);
@@ -289,25 +320,30 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 		include?: (keyof FileMetadata)[];
 		includeVaultProperty?: boolean;
 	}) => {
-		const files = await drive
-			.get(
-				`drive/v3/files?fields=nextPageToken,files(${include.join(
-					","
-				)})&pageSize=${pageSize}&q=${
-					matches ? getQuery(matches, includeVaultProperty) : "trashed=false"
-				}${
-					matches?.find(({ query }) => query)
-						? ""
-						: "&orderBy=name" +
-						  (order === "ascending" ? "" : " desc")
-				}${pageToken ? "&pageToken=" + pageToken : ""}&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=user`
-			)
-			.json<any>();
-		if (!files) return;
-		return files as {
-			nextPageToken?: string;
-			files: FileMetadata[];
-		};
+		try {
+			const files = await drive
+				.get(
+					`drive/v3/files?fields=nextPageToken,files(${include.join(
+						","
+					)})&pageSize=${pageSize}&q=${
+						matches ? getQuery(matches, includeVaultProperty) : "trashed=false"
+					}${
+						matches?.find(({ query }) => query)
+							? ""
+							: "&orderBy=name" +
+							  (order === "ascending" ? "" : " desc")
+					}${pageToken ? "&pageToken=" + pageToken : ""}&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=user`
+				)
+				.json<any>();
+			if (!files) return;
+			return files as {
+				nextPageToken?: string;
+				files: FileMetadata[];
+			};
+		} catch (e) {
+			console.error("[OGD] paginateFiles failed:", e);
+			return;
+		}
 	};
 
 	const searchFiles = async (
@@ -328,6 +364,7 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 				...data,
 				pageToken: files.nextPageToken,
 				pageSize: 1000,
+				includeVaultProperty: includeVP,
 			});
 			if (!nextPage) return;
 			files.files.push(...nextPage.files);
@@ -342,31 +379,36 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 	};
 
 	const getRootFolderId = async () => {
-		const files = await searchFiles(
-			{
-				matches: [{ properties: { obsidian: "vault" } }],
-			},
-			true
-		);
-		if (!files) return;
-		if (!files.length) {
-			const rootFolder = await drive
-				.post(`drive/v3/files`, {
-					json: {
-						name: t.app.vault.getName(),
-						mimeType: folderMimeType,
-						description: "Obsidian Vault: " + t.app.vault.getName(),
-						properties: {
-							obsidian: "vault",
-							vault: t.app.vault.getName(),
+		try {
+			const files = await searchFiles(
+				{
+					matches: [{ properties: { obsidian: "vault" } }],
+				},
+				true
+			);
+			if (!files) return;
+			if (!files.length) {
+				const rootFolder = await drive
+					.post(`drive/v3/files`, {
+						json: {
+							name: t.app.vault.getName(),
+							mimeType: folderMimeType,
+							description: "Obsidian Vault: " + t.app.vault.getName(),
+							properties: {
+								obsidian: "vault",
+								vault: t.app.vault.getName(),
+							},
 						},
-					},
-				})
-				.json<any>();
-			if (!rootFolder) return;
-			return rootFolder.id as string;
-		} else {
-			return files[0].id as string;
+					})
+					.json<any>();
+				if (!rootFolder) return;
+				return rootFolder.id as string;
+			} else {
+				return files[0].id as string;
+			}
+		} catch (e) {
+			console.error("[OGD] getRootFolderId failed:", e);
+			return;
 		}
 	};
 
@@ -383,28 +425,33 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 		properties?: Record<string, string>;
 		modifiedTime?: string;
 	}) => {
-		if (!parent) {
-			parent = await getRootFolderId();
-			if (!parent) return;
+		try {
+			if (!parent) {
+				parent = await getRootFolderId();
+				if (!parent) return;
+			}
+
+			if (!properties) properties = {};
+			if (!properties.vault) properties.vault = t.app.vault.getName();
+
+			const folder = await drive
+				.post(`drive/v3/files`, {
+					json: {
+						name,
+						mimeType: folderMimeType,
+						description,
+						parents: [parent],
+						properties,
+						...(modifiedTime ? { modifiedTime } : {}),
+					},
+				})
+				.json<any>();
+			if (!folder) return;
+			return folder.id as string;
+		} catch (e) {
+			console.error(`[OGD] createFolder failed for "${name}":`, e);
+			return;
 		}
-
-		if (!properties) properties = {};
-		if (!properties.vault) properties.vault = t.app.vault.getName();
-
-		const folder = await drive
-			.post(`drive/v3/files`, {
-				json: {
-					name,
-					mimeType: folderMimeType,
-					description,
-					parents: [parent],
-					properties,
-					modifiedTime,
-				},
-			})
-			.json<any>();
-		if (!folder) return;
-		return folder.id as string;
 	};
 
 	const uploadFile = async (
@@ -413,42 +460,47 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 		parent?: string,
 		metadata?: Partial<Omit<FileMetadata, "id">>
 	) => {
-		if (!parent) {
-			parent = await getRootFolderId();
-			if (!parent) return;
+		try {
+			if (!parent) {
+				parent = await getRootFolderId();
+				if (!parent) return;
+			}
+
+			if (!metadata) metadata = {};
+			if (!metadata.properties) metadata.properties = {};
+			if (!metadata.properties.vault) {
+				metadata.properties.vault = t.app.vault.getName();
+			}
+
+			const form = new FormData();
+			form.append(
+				"metadata",
+				new Blob(
+					[
+						JSON.stringify({
+							name,
+							mimeType: file.type,
+							parents: [parent],
+							...metadata,
+						}),
+					],
+					{ type: "application/json" }
+				)
+			);
+			form.append("file", file);
+
+			const result = await drive
+				.post(`upload/drive/v3/files?uploadType=multipart&fields=id`, {
+					body: form,
+				})
+				.json<any>();
+			if (!result) return;
+
+			return result.id as string;
+		} catch (e) {
+			console.error(`[OGD] uploadFile failed for "${name}":`, e);
+			return;
 		}
-
-		if (!metadata) metadata = {};
-		if (!metadata.properties) metadata.properties = {};
-		if (!metadata.properties.vault) {
-			metadata.properties.vault = t.app.vault.getName();
-		}
-
-		const form = new FormData();
-		form.append(
-			"metadata",
-			new Blob(
-				[
-					JSON.stringify({
-						name,
-						mimeType: file.type,
-						parents: [parent],
-						...metadata,
-					}),
-				],
-				{ type: "application/json" }
-			)
-		);
-		form.append("file", file);
-
-		const result = await drive
-			.post(`upload/drive/v3/files?uploadType=multipart&fields=id`, {
-				body: form,
-			})
-			.json<any>();
-		if (!result) return;
-
-		return result.id as string;
 	};
 
 	const updateFile = async (
@@ -456,52 +508,77 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 		newContent: Blob,
 		newMetadata: Partial<Omit<FileMetadata, "id">> = {}
 	) => {
-		const form = new FormData();
-		form.append(
-			"metadata",
-			new Blob([JSON.stringify(newMetadata)], {
-				type: "application/json",
-			})
-		);
-		form.append("file", newContent);
+		try {
+			if (!id) return;
+			const form = new FormData();
+			form.append(
+				"metadata",
+				new Blob([JSON.stringify(newMetadata)], {
+					type: "application/json",
+				})
+			);
+			form.append("file", newContent);
 
-		const result = await drive
-			.patch(
-				`upload/drive/v3/files/${id}?uploadType=multipart&fields=id`,
-				{
-					body: form,
-				}
-			)
-			.json<any>();
-		if (!result) return;
+			const result = await drive
+				.patch(
+					`upload/drive/v3/files/${id}?uploadType=multipart&fields=id`,
+					{
+						body: form,
+					}
+				)
+				.json<any>();
+			if (!result) return;
 
-		return result.id as string;
+			return result.id as string;
+		} catch (e) {
+			console.error(`[OGD] updateFile failed for ID "${id}":`, e);
+			return;
+		}
 	};
 
 	const updateFileMetadata = async (
 		id: string,
 		metadata: Partial<Omit<FileMetadata, "id">>
 	) => {
-		const result = await drive
-			.patch(`drive/v3/files/${id}`, {
-				json: metadata,
-			})
-			.json<any>();
-		if (!result) return;
-		return result.id as string;
+		try {
+			if (!id) return;
+			const result = await drive
+				.patch(`drive/v3/files/${id}`, {
+					json: metadata,
+				})
+				.json<any>();
+			if (!result) return;
+			return result.id as string;
+		} catch (e) {
+			console.error(`[OGD] updateFileMetadata failed for ID "${id}":`, e);
+			return;
+		}
 	};
 
 	const deleteFile = async (id: string) => {
-		const result = await drive.delete(`drive/v3/files/${id}`);
-		if (!result.ok) return;
-		return true;
+		try {
+			if (!id) return;
+			const result = await drive.delete(`drive/v3/files/${id}`);
+			if (!result.ok) return;
+			return true;
+		} catch (e) {
+			console.error(`[OGD] deleteFile failed for ID "${id}":`, e);
+			return;
+		}
 	};
 
 	const getFile = (id: string) =>
 		drive.get(`drive/v3/files/${id}?alt=media&acknowledgeAbuse=true`);
 
-	const getFileMetadata = (id: string) =>
-		drive.get(`drive/v3/files/${id}`).json<FileMetadata>();
+	const getFileMetadata = async (id: string) => {
+		try {
+			if (!id) return undefined;
+			return await drive.get(`drive/v3/files/${id}`).json<FileMetadata>();
+		} catch (e) {
+			console.error(`[OGD] getFileMetadata failed for ID "${id}":`, e);
+			return undefined;
+		}
+	};
 
 	const idFromPath = async (path: string) => {
 		const idFromMapping = Object.entries(t.settings.driveIdToPath).find(
@@ -545,42 +622,55 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 	};
 
 	const batchDelete = async (ids: string[]) => {
-		const body = new FormData();
+		const validIds = ids.filter((id): id is string => Boolean(id));
+		if (validIds.length === 0) return "";
 
-		// Loop through file IDs to create each delete request
-		ids.forEach((fileId, index) => {
-			const deleteRequest = [
-				`--batch_boundary`,
-				"Content-Type: application/http",
-				"",
-				`DELETE /drive/v3/files/${fileId} HTTP/1.1`,
-				"",
-				"",
-			].join("\r\n");
+		const boundary = "batch_boundary";
+		const BATCH_LIMIT = 100;
+		const results: string[] = [];
 
-			body.append(`request_${index + 1}`, deleteRequest);
-		});
+		try {
+			for (let i = 0; i < validIds.length; i += BATCH_LIMIT) {
+				const chunk = validIds.slice(i, i + BATCH_LIMIT);
+				const body =
+					chunk
+						.map(
+							(fileId) =>
+								`--${boundary}\r\n` +
+								`Content-Type: application/http\r\n\r\n` +
+								`DELETE /drive/v3/files/${fileId} HTTP/1.1\r\n\r\n`
+						)
+						.join("") + `--${boundary}--`;
 
-		body.append("", "--batch_boundary--");
-
-		const result = await drive
-			.post(`batch/drive/v3`, {
-				headers: {
-					"Content-Type": "multipart/mixed; boundary=batch_boundary",
-				},
-				body,
-			})
-			.text();
-		if (!result) return;
-		return result;
+				const result = await drive
+					.post(`batch/drive/v3`, {
+						headers: {
+							"Content-Type": `multipart/mixed; boundary=${boundary}`,
+						},
+						body,
+					})
+					.text();
+				if (!result) return;
+				results.push(result);
+			}
+			return results.join("\n");
+		} catch (e) {
+			console.error("[OGD] batchDelete failed:", e);
+			return;
+		}
 	};
 
 	const getChangesStartToken = async () => {
-		const result = await drive
-			.get(`drive/v3/changes/startPageToken`)
-			.json<any>();
-		if (!result) return;
-		return result.startPageToken as string;
+		try {
+			const result = await drive
+				.get(`drive/v3/changes/startPageToken`)
+				.json<any>();
+			if (!result) return;
+			return result.startPageToken as string;
+		} catch (e) {
+			console.error("[OGD] getChangesStartToken failed:", e);
+			return;
+		}
 	};
 
 	const getChanges = async (startToken: string) => {
@@ -597,29 +687,34 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 				)
 				.json<any>();
 
-		const result = await request(startToken);
-		if (!result) return;
+		try {
+			const result = await request(startToken);
+			if (!result) return;
 
-		let newStartPageToken = result.newStartPageToken;
+			let newStartPageToken = result.newStartPageToken;
 
-		while (result.nextPageToken) {
-			const nextPage = await request(result.nextPageToken);
-			if (!nextPage) return;
-			result.changes.push(...nextPage.changes);
-			newStartPageToken = nextPage.newStartPageToken;
-			result.nextPageToken = nextPage.nextPageToken;
+			while (result.nextPageToken) {
+				const nextPage = await request(result.nextPageToken);
+				if (!nextPage) return;
+				result.changes.push(...nextPage.changes);
+				newStartPageToken = nextPage.newStartPageToken;
+				result.nextPageToken = nextPage.nextPageToken;
+			}
+
+			return {
+				changes: result.changes as {
+					kind: string;
+					removed: boolean;
+					file: FileMetadata;
+					fileId: string;
+					time: string;
+				}[],
+				newStartPageToken,
+			};
+		} catch (e) {
+			console.error("[OGD] getChanges failed:", e);
+			return;
 		}
-
-		return {
-			changes: result.changes as {
-				kind: string;
-				removed: boolean;
-				file: FileMetadata;
-				fileId: string;
-				time: string;
-			}[],
-			newStartPageToken,
-		};
 	};
 
 	const deleteFilesMinimumOperations = async (files: TAbstractFile[]) => {
@@ -684,10 +779,11 @@ export const getDriveClient = (t: ObsidianGoogleDrive) => {
 						const files = await adapter.list(plugin);
 						await Promise.all(
 							files.files
-								.filter((path) =>
-									WHITELISTED_PLUGIN_FILES.includes(
-										fileNameFromPath(path)
-									)
+								.filter(
+									(path) =>
+										WHITELISTED_PLUGIN_FILES.includes(
+											fileNameFromPath(path)
+										) && !isPluginDataJson(path, vault.configDir)
 								)
 								.map(async (path) => {
 									const file = await adapter.stat(path);

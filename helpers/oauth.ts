@@ -1,7 +1,6 @@
 import type ObsidianGoogleDrive from "main";
-import { Notice } from "obsidian";
+import { Notice, Platform } from "obsidian";
 import { generateCodeVerifier, generateCodeChallenge } from "./pkce";
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
 
 export type PkceState = {
 	codeVerifier: string;
@@ -12,8 +11,10 @@ const OAUTH_PORT = 18412;
 const REDIRECT_URI = `http://127.0.0.1:${OAUTH_PORT}`;
 
 function waitForCallback(): Promise<{ code: string; state: string; error?: string }> {
+	const { createServer } = require("http") as typeof import("http");
+
 	return new Promise((resolve, reject) => {
-		const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+		const server = createServer((req, res) => {
 			if (req.url) {
 				const parsedUrl = new URL(req.url, REDIRECT_URI);
 				const code = parsedUrl.searchParams.get("code") || "";
@@ -102,6 +103,14 @@ async function doExchangeCodeForTokens(
 }
 
 export async function startAuthFlow(plugin: ObsidianGoogleDrive): Promise<void> {
+	if (!Platform.isDesktopApp) {
+		new Notice(
+			"Interactive OAuth sign-in requires desktop Obsidian. On mobile, authenticate on desktop first and copy your Client ID, Client Secret, and Refresh Token into settings.",
+			0
+		);
+		return;
+	}
+
 	const { shell } = require("electron") as typeof import("electron");
 
 	const codeVerifier = generateCodeVerifier();

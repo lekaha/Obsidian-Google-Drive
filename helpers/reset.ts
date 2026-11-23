@@ -55,119 +55,181 @@ export const reset = async (t: ObsidianGoogleDrive) => {
 	if (!proceed) return;
 
 	const syncNotice = await t.startSync();
+	let failedCount = 0;
 
-	await pull(t, true);
+	try {
+		await pull(t, true);
 
-	const { vault } = t.app;
+		const { vault } = t.app;
 
-	const operations = Object.entries(t.settings.operations);
-	const deletes = operations.filter(([_, op]) => op === "delete");
-	const creates = operations.filter(([_, op]) => op === "create");
-	const modifies = operations.filter(([_, op]) => op === "modify");
+		const operations = Object.entries(t.settings.operations);
+		const deletes = operations.filter(([_, op]) => op === "delete");
+		const creates = operations.filter(([_, op]) => op === "create");
+		const modifies = operations.filter(([_, op]) => op === "modify");
 
-	const filePathToId = Object.fromEntries(
-		Object.entries(t.settings.driveIdToPath).map(([id, path]) => [path, id])
-	);
-
-	if (creates.length) {
-		await t.drive.deleteFilesMinimumOperations(
-			creates
-				.map(([path]) => vault.getAbstractFileByPath(path))
-				.filter(
-					(file) => file instanceof TAbstractFile
-				) as TAbstractFile[]
+		const filePathToId = Object.fromEntries(
+			Object.entries(t.settings.driveIdToPath).map(([id, path]) => [
+				path,
+				id,
+			])
 		);
-	}
 
-	syncNotice.setMessage("Syncing (33%)");
-
-	if (modifies.length) {
-		let completed = 0;
-		const files = modifies.map(([path]) =>
-			vault.getFileByPath(path)
-		) as TFile[];
-		await batchAsyncs(
-			files.map((file) => async () => {
-				const [onlineFile, metadata] = await Promise.all([
-					t.drive.getFile(filePathToId[file.path]).arrayBuffer(),
-					t.drive.getFileMetadata(filePathToId[file.path]),
-				]);
-				if (!onlineFile || !metadata) {
-					return new Notice(
-						"An error occurred fetching Google Drive files."
-					);
-				}
-
-				completed++;
-				syncNotice.setMessage(
-					getSyncMessage(33, 66, completed, files.length)
-				);
-				return t.modifyFile(file, onlineFile, metadata.modifiedTime);
-			})
-		);
-	}
-
-	if (deletes.length) {
-		const files = await t.drive.searchFiles({
-			include: ["id", "mimeType", "properties", "modifiedTime"],
-			matches: deletes.map(([path]) => ({ properties: { path } })),
-		});
-		if (!files) {
-			return new Notice("An error occurred fetching Google Drive files.");
+		if (creates.length) {
+			await t.drive.deleteFilesMinimumOperations(
+				creates
+					.map(([path]) => vault.getAbstractFileByPath(path))
+					.filter(
+						(file): file is TAbstractFile =>
+							file instanceof TAbstractFile
+					)
+			);
+			creates.forEach(([path]) => delete t.settings.operations[path]);
 		}
 
-		const pathToFile = Object.fromEntries(
-			files.map((file) => [file.properties.path, file])
-		);
+		syncNotice.setMessage("Syncing (33%)");
 
-		const deletedFolders = deletes.filter(
-			([path]) => pathToFile[path].mimeType === folderMimeType
-		);
+		if (modifies.length) {
+			let completed = 0;
+			const files = modifies
+				.map(([path]) => vault.getFileByPath(path))
+				.filter((file): file is TFile => file instanceof TFile);
+			await batchAsyncs(
+				files.map((file) => async () => {
+					const driveId = filePathToId[file.path];
+					if (!driveId) {
+						failedCount++;
+						return;
+					}
+					try {
+						const [onlineFile, metadata] = await Promise.all([
+							t.drive.getFile(driveId).arrayBuffer(),
+							t.drive.getFileMetadata(driveId),
+						]);
+						if (!onlineFile || !metadata) {
+							failedCount++;
+							new Notice(
+								"An error occurred fetching Google Drive files."
+							);
+							return;
+						}
 
-		if (deletedFolders.length) {
-			const batches = foldersToBatches(
-				deletedFolders.map(([path]) => path)
+						completed++;
+						syncNotice.setMessage(
+							getSyncMessage(33, 66, completed, files.length)
+						);
+						await t.modifyFile(
+							file,
+							onlineFile,
+							metadata.modifiedTime
+						);
+						delete t.settings.operations[file.path];
+					} catch (e) {
+						console.error(
+							`[OGD] Reset failed for modified file "${file.path}":`,
+							e
+						);
+						failedCount++;
+					}
+				})
+			);
+		}
+
+		if (deletes.length) {
+			const files = await t.drive.searchFiles({
+				include: ["id", "mimeType", "properties", "modifiedTime"],
+				matches: deletes.map(([path]) => ({ properties: { path } })),
+			});
+			if (!files) {
+				new Notice("An error occurred fetching Google Drive files.");
+				return;
+			}
+
+			const pathToFile = Object.fromEntries(
+				files
+					.filter((file) => file.properties?.path)
+					.map((file) => [file.properties.path, file])
 			);
 
-			for (const batch of batches) {
-				await Promise.all(
-					batch.map((folder) => t.createFolder(folder))
+			const deletedFolders = deletes.filter(
+				([path]) => pathToFile[path]?.mimeType === folderMimeType
+			);
+
+			if (deletedFolders.length) {
+				const batches = foldersToBatches(
+					deletedFolders.map(([path]) => path)
 				);
-			}
-		}
 
-		let completed = 0;
-
-		const deletedFiles = deletes.filter(
-			([path]) => pathToFile[path].mimeType !== folderMimeType
-		);
-
-		await batchAsyncs(
-			deletedFiles.map(([path]) => async () => {
-				const onlineFile = await t.drive
-					.getFile(filePathToId[path])
-					.arrayBuffer();
-				if (!onlineFile) {
-					return new Notice(
-						"An error occurred fetching Google Drive files."
+				for (const batch of batches) {
+					await Promise.all(
+						batch.map(async (folder) => {
+							await t.createFolder(folder);
+							delete t.settings.operations[folder];
+						})
 					);
 				}
-				completed++;
-				syncNotice.setMessage(
-					getSyncMessage(66, 99, completed, deletedFiles.length)
-				);
-				return t.createFile(
-					path,
-					onlineFile,
-					pathToFile[path].modifiedTime
-				);
-			})
-		);
+			}
+
+			let completed = 0;
+
+			const deletedFiles = deletes.filter(
+				([path]) =>
+					pathToFile[path] &&
+					pathToFile[path].mimeType !== folderMimeType
+			);
+
+			await batchAsyncs(
+				deletedFiles.map(([path]) => async () => {
+					const driveId = filePathToId[path] || pathToFile[path]?.id;
+					if (!driveId) {
+						failedCount++;
+						return;
+					}
+					try {
+						const onlineFile = await t.drive
+							.getFile(driveId)
+							.arrayBuffer();
+						if (!onlineFile) {
+							failedCount++;
+							new Notice(
+								"An error occurred fetching Google Drive files."
+							);
+							return;
+						}
+						completed++;
+						syncNotice.setMessage(
+							getSyncMessage(
+								66,
+								99,
+								completed,
+								deletedFiles.length
+							)
+						);
+						await t.createFile(
+							path,
+							onlineFile,
+							pathToFile[path].modifiedTime
+						);
+						delete t.settings.operations[path];
+					} catch (e) {
+						console.error(
+							`[OGD] Reset failed for deleted file "${path}":`,
+							e
+						);
+						failedCount++;
+					}
+				})
+			);
+		}
+
+		if (failedCount > 0) {
+			new Notice(
+				`Reset finished with ${failedCount} error(s). Please try again.`
+			);
+		} else {
+			t.settings.operations = {};
+			new Notice("Reset complete.");
+		}
+	} finally {
+		await t.endSync(syncNotice);
 	}
-
-	t.settings.operations = {};
-
-	await t.endSync(syncNotice);
-
-	new Notice("Reset complete.");
 };

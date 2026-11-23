@@ -15,11 +15,10 @@ This is an unofficial sync plugin for Obsidian, specifically for Google Drive.
 ## Features
 
 -   Syncing both ways (from Obsidian to Google Drive and back)
--   Cross-device support
--   Obsidian iOS app support
--   Local file prioritization (automatically resolves conflicts)
+-   Cross-device support (Desktop, Android, and iOS)
+-   Safe conflict handling (keeps local changes and saves conflicting cloud versions as `(conflict ...)` copies)
 -   Multiple vaults per Google account
--   Configuration syncing
+-   Configuration syncing (excluding per-device plugin sync state `google-drive-sync/data.json`)
 
 ## New Devices
 
@@ -46,8 +45,11 @@ This is an unofficial sync plugin for Obsidian, specifically for Google Drive.
     -   Our plugin does have code to handle conflicts, but it might not be perfect or as the user expects, so try to avoid them
 -   Make sure to sync with an adequate internet connection
     -   Closing the app or losing connection while syncing could lead to data corruption
--   The plugin does NOT have manual conflict resolution
-    -   If you encounter a conflict, the plugin will automatically resolve it with local file prioritization
+-   Conflict handling:
+    -   If a note is modified on two devices before syncing, your local version is kept and the conflicting cloud version is saved alongside it as `filename (conflict YYYY-MM-DD_HH-MM-SS).ext` so no edits are silently lost
+    -   You can review and merge conflict copies manually, then delete them when done
+-   Per-device plugin state:
+    -   `.obsidian/plugins/google-drive-sync/data.json` is intentionally excluded from Drive sync so each device keeps its own credentials, sync cursor, and pending operations safely
 -   Do **NOT** change the Obsidian configuration folder
     -   If you really want to, make a new vault, change the folder, enable the plugin, and copy your files over (you can move the contents of .obsidian to the new folder through file explorer)
 -   This only accesses the Google Drive API to sync files and does not access or store any data outside of the user's device
@@ -84,6 +86,18 @@ This method authenticates directly with Google's OAuth 2.0 servers — no third-
 10. Click **Authenticate** in plugin settings — your browser will open for Google authentication and a local server will listen for the callback on port 18412
 11. Grant consent in Google — you'll see a success page in your browser and a confirmation notice in Obsidian
 12. Reload the Obsidian app
+
+#### Mobile Setup (Android / iOS)
+
+Because Google's loopback OAuth server (`127.0.0.1:18412`) only runs on desktop Obsidian, set up mobile devices by copying your credentials from a desktop device:
+
+1. Complete the desktop BYOK setup above on Mac, Windows, or Linux
+2. Open `.obsidian/plugins/google-drive-sync/data.json` on your desktop device and copy `clientId`, `clientSecret` (if set), and `refreshToken`
+3. On Android/iOS, open **Settings > Google Drive Sync** and paste:
+   - **Google Client ID**
+   - **Google Client Secret (optional)**
+   - **Refresh Token (Mobile / Manual Setup)**
+4. Reload Obsidian on your mobile device to activate sync
 
 ### Method 2: Legacy Authentication — **For existing users**
 
@@ -124,5 +138,17 @@ If you already have a refresh token from the previous method, you can continue u
     -   Do NOT rename local vaults that you are syncing to Google Drive
     -   Instead, make a new vault, sync it, and transfer your files over
     -   We will not add any implementation to automate this process because it inherently messes with other synced devices
+
+## Development
+
+1. Install [mise](https://mise.jdx.dev/)
+2. Install the pinned toolchain and dependencies:
+   ```sh
+   mise install
+   mise run bootstrap
+   ```
+3. Run `mise tasks` to see all available commands (e.g., `mise run dev`, `mise run build`, `mise run check`).
+
+> `mise` is optional — you can also run `npm install` and `npm run build` directly using the Node version declared in `mise.toml`.
 
 Privacy Policy: [https://example.com/privacy](https://example.com/privacy)

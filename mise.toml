@@ -1,0 +1,35 @@
+min_version = "2024.11.1"
+
+[tools]
+node = "18"
+
+[env]
+NODE_ENV = "{{ env.NODE_ENV | default(value='development') }}"
+
+[tasks.bootstrap]
+description = "Install Node dependencies"
+run = "npm install"
+
+[tasks.dev]
+description = "Build and watch the plugin in development mode"
+run = "npm run dev"
+
+[tasks.build]
+description = "Type-check and build the production plugin bundle"
+run = "npm run build"
+
+[tasks.check]
+description = "Run all CI checks (type-check and production build)"
+depends = ["build"]
+
+[tasks."test:unit"]
+description = "Run standalone sync safety unit tests"
+run = "npx tsx test/unit/test-sync-safety.ts"
+
+[tasks."test:oauth"]
+description = "Run the interactive PKCE OAuth integration test"
+run = "npm run test-oauth"
+
+[tasks.version]
+description = "Bump manifest.json and versions.json from package.json version"
+run = "npm run version"

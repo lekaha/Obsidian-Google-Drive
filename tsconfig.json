@@ -23,7 +23,6 @@
   ],
   "exclude": [
     "node_modules",
-    "debug-*.ts",
-    "test-pull-standalone.ts"
+    "test"
   ]
 }

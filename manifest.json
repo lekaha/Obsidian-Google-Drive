@@ -1,9 +1,9 @@
 {
 	"id": "google-drive-sync",
 	"name": "Google Drive Sync",
-	"version": "3.0.1",
+	"version": "3.0.2",
 	"minAppVersion": "1.6.0",
-	"description": "Syncs a vault into Google Drive for cross-platform use (works for iOS).",
+	"description": "Syncs a vault into Google Drive for cross-platform use (works on Desktop, Android, and iOS).",
 	"author": "lekaha",
 	"authorUrl": "https://lekaha.github.io/",
 	"isDesktopOnly": false

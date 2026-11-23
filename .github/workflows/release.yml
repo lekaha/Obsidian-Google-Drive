@@ -12,10 +12,18 @@ jobs:
         steps:
             - uses: actions/checkout@v3
 
-            - name: Use Node.js
-              uses: actions/setup-node@v3
-              with:
-                  node-version: "18.x"
+            - name: Setup mise
+              uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+
+            - name: Verify version consistency
+              run: |
+                  tag="${GITHUB_REF#refs/tags/}"
+                  pkg_ver=$(node -p "require('./package.json').version")
+                  manifest_ver=$(node -p "require('./manifest.json').version")
+                  if [ "$tag" != "$pkg_ver" ] || [ "$tag" != "$manifest_ver" ]; then
+                    echo "Version mismatch: tag=$tag, package.json=$pkg_ver, manifest.json=$manifest_ver"
+                    exit 1
+                  fi
 
             - name: Build plugin
               run: |

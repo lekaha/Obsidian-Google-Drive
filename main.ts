@@ -127,9 +127,10 @@ export default class ObsidianGoogleDrive extends Plugin {
 			this.app.workspace.on("quit", () => this.saveSettings())
 		);
 
-		this.app.workspace.onLayoutReady(() =>
-			this.registerEvent(vault.on("create", this.handleCreate.bind(this)))
-		);
+		this.app.workspace.onLayoutReady(() => {
+			this.registerEvent(vault.on("create", this.handleCreate.bind(this)));
+			this.registerEvent(vault.on("rename", this.handleRename.bind(this)));
+		});
 		this.registerEvent(vault.on("delete", this.handleDelete.bind(this)));
 		this.registerEvent(vault.on("modify", this.handleModify.bind(this)));
 
@@ -146,8 +147,13 @@ export default class ObsidianGoogleDrive extends Plugin {
 				if (connected) {
 					this.syncing = true;
 					this.ribbonIcon.addClass("spin");
-					await pull(this, true);
-					await this.endSync();
+					try {
+						await pull(this, true);
+					} catch (e) {
+						console.error("[OGD] Startup pull failed:", e);
+					} finally {
+						await this.endSync();
+					}
 				}
 			});
 		} else if (this.settings.clientId) {
@@ -214,25 +220,8 @@ export default class ObsidianGoogleDrive extends Plugin {
 	}
 
 	async createFolder(path: string) {
-		console.log(`[CREATEFOLDER] Attempting to create folder: "${path}"`);
-		const isCareerOrMarket = path.includes("career") || path.includes("market-research");
-		if (isCareerOrMarket) console.log(`[CREATEFOLDER-HIT] main.createFolder called for: "${path}"`);
-		const parentPath = path.split("/").slice(0, -1).join("/");
-		if (parentPath) {
-			const parentExists = this.app.vault.getFolderByPath(parentPath) || await this.app.vault.adapter.exists(parentPath);
-			if (isCareerOrMarket) console.log(`[CREATEFOLDER-HIT] Parent folder "${parentPath}" exists: ${!!parentExists}`);
-			if (!parentExists) {
-				console.log(`[CREATEFOLDER] WARNING: Parent folder "${parentPath}" does NOT exist for "${path}"!`);
-			}
-		}
 		const oldOperation = this.settings.operations[path];
-		try {
-			await this.app.vault.createFolder(path);
-			if (isCareerOrMarket) console.log(`[CREATEFOLDER-HIT] main.createFolder succeeded for: "${path}"`);
-		} catch (e: any) {
-			console.log(`[CREATEFOLDER] FAILED to create "${path}": ${e?.message || e}`);
-			throw e;
-		}
+		await this.app.vault.createFolder(path);
 		this.settings.operations[path] = oldOperation;
 		if (!oldOperation) delete this.settings.operations[path];
 	}
@@ -437,9 +426,9 @@ class SettingsTab extends PluginSettingTab {
 		});
 
 		new Setting(containerEl)
-			.setName("Legacy Refresh Token")
+			.setName("Refresh Token (Mobile / Manual Setup)")
 			.setDesc(
-				"Deprecated: Use the PKCE authentication flow above instead."
+				"On Android/iOS, authenticate on desktop first, then paste your Client ID, Client Secret, and Refresh Token here. Also works for legacy refresh tokens."
 			)
 			.addText((text) => {
 				const cancel = () => {
@@ -448,11 +437,11 @@ class SettingsTab extends PluginSettingTab {
 					return this.plugin.saveSettings();
 				};
 
-				text.setPlaceholder("Enter your legacy refresh token")
+				text.setPlaceholder("Enter your refresh token")
 					.setValue(this.plugin.settings.refreshToken)
 					.onChange(async (value) => {
-						this.plugin.settings.refreshToken = value;
-						if (!value) {
+						this.plugin.settings.refreshToken = value.trim();
+						if (!this.plugin.settings.refreshToken) {
 							return this.plugin.debouncedSaveSettings();
 						}
 						if (!(await refreshAccessToken(this.plugin))) {
@@ -460,6 +449,7 @@ class SettingsTab extends PluginSettingTab {
 							return;
 						}
 						if (
+							!this.plugin.settings.clientId &&
 							vault
 								.getAllLoadedFiles()
 								.filter(({ path }) => path !== "/").length > 0
@@ -471,14 +461,16 @@ class SettingsTab extends PluginSettingTab {
 							return cancel();
 						}
 
-						const changesToken =
-							await this.plugin.drive.getChangesStartToken();
-						if (!changesToken) {
-							return new Notice(
-								"An error occurred fetching Google Drive changes token."
-							);
+						if (!this.plugin.settings.changesToken) {
+							const changesToken =
+								await this.plugin.drive.getChangesStartToken();
+							if (!changesToken) {
+								return new Notice(
+									"An error occurred fetching Google Drive changes token."
+								);
+							}
+							this.plugin.settings.changesToken = changesToken;
 						}
-						this.plugin.settings.changesToken = changesToken;
 
 						await this.plugin.saveSettings();
 						new Notice(
