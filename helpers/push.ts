@@ -240,6 +240,52 @@ class ConfirmUndoModal extends Modal {
 	}
 }
 
+export const findUntrackedLocalPaths = (
+	allPaths: string[],
+	driveIdToPath: Record<string, string>,
+	operations: Record<string, "create" | "delete" | "modify">,
+	configDir: string
+): string[] => {
+	const trackedPaths = new Set(Object.values(driveIdToPath));
+	const configPrefix = configDir + "/";
+
+	return allPaths.filter((p) => {
+		if (!p || p === "/") return false;
+		if (p === configDir || p.startsWith(configPrefix)) return false;
+		if (trackedPaths.has(p)) return false;
+		if (p in operations) return false;
+		return true;
+	});
+};
+
+export const queueUntrackedLocalFiles = async (t: ObsidianGoogleDrive) => {
+	if (t.syncing) return;
+
+	const { vault } = t.app;
+	const allPaths = vault.getAllLoadedFiles().map((f) => f.path);
+	const untracked = findUntrackedLocalPaths(
+		allPaths,
+		t.settings.driveIdToPath,
+		t.settings.operations,
+		vault.configDir
+	);
+
+	if (untracked.length === 0) {
+		new Notice("All local files are already tracked on Google Drive.");
+		return;
+	}
+
+	for (const p of untracked) {
+		t.settings.operations[p] = "create";
+	}
+	await t.saveSettings();
+
+	new Notice(
+		`Queued ${untracked.length} untracked local item(s). Review and confirm to push.`
+	);
+	await push(t);
+};
+
 export const push = async (t: ObsidianGoogleDrive) => {
 	if (t.syncing) return;
 	const initialOperations = Object.entries(t.settings.operations).sort(

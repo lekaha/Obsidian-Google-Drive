@@ -2,7 +2,7 @@ import { checkConnection, getDriveClient } from "helpers/drive";
 import { refreshAccessToken } from "helpers/ky";
 import { startAuthFlow, type PkceState } from "helpers/oauth";
 import { pull } from "helpers/pull";
-import { push } from "helpers/push";
+import { push, queueUntrackedLocalFiles } from "helpers/push";
 import { reset } from "helpers/reset";
 import {
 	App,
@@ -95,6 +95,14 @@ export default class ObsidianGoogleDrive extends Plugin {
 				);
 				menu.addItem((item) =>
 					item
+						.setTitle("Queue untracked local files")
+						.setIcon("folder-plus")
+						.onClick(() => {
+							queueUntrackedLocalFiles(this);
+						})
+				);
+				menu.addItem((item) =>
+					item
 						.setTitle("Reset from Drive")
 						.setIcon("triangle-alert")
 						.onClick(() => {
@@ -109,6 +117,12 @@ export default class ObsidianGoogleDrive extends Plugin {
 			id: "push",
 			name: "Push to Google Drive",
 			callback: () => push(this),
+		});
+
+		this.addCommand({
+			id: "queue-untracked",
+			name: "Queue untracked local files for push",
+			callback: () => queueUntrackedLocalFiles(this),
 		});
 
 		this.addCommand({

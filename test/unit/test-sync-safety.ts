@@ -28,6 +28,7 @@ class Notice {
 	}
 	hide() {}
 }
+class Modal {}
 
 const originalResolve = (Module as any)._resolveFilename;
 (Module as any)._resolveFilename = function (request: string, ...args: any[]) {
@@ -43,6 +44,7 @@ require.cache["obsidian"] = {
 		TFile,
 		TFolder,
 		Notice,
+		Modal,
 		Platform: { isDesktopApp: false, isMobile: true },
 	},
 } as any;
@@ -55,6 +57,7 @@ async function main() {
 		buildConflictPath,
 	} = await import("../../helpers/drive");
 	const { hasPreservedDescendants } = await import("../../helpers/pull");
+	const { findUntrackedLocalPaths } = await import("../../helpers/push");
 
 	// 1. Drive query escaping
 	assert.equal(escapeDriveQueryValue("John's Vault"), "John\\'s Vault");
@@ -161,7 +164,28 @@ async function main() {
 		"Folder containing a nested non-deleted file MUST be preserved"
 	);
 
-	// 6. Android bundle safety check: no top-level require("http") or require("electron")
+	// 6. Untracked local file discovery
+	const untracked = findUntrackedLocalPaths(
+		[
+			"/",
+			"",
+			".obsidian",
+			".obsidian/app.json",
+			"already-synced.md",
+			"already-queued.md",
+			"preexisting-folder",
+			"preexisting-folder/note.md",
+		],
+		{ id1: "already-synced.md" },
+		{ "already-queued.md": "modify" },
+		".obsidian"
+	);
+	assert.deepEqual(untracked, [
+		"preexisting-folder",
+		"preexisting-folder/note.md",
+	]);
+
+	// 7. Android bundle safety check: no top-level require("http") or require("electron")
 	const bundlePath = path.resolve(process.cwd(), "main.js");
 	assert.ok(fs.existsSync(bundlePath), "main.js bundle must exist");
 	const bundle = fs.readFileSync(bundlePath, "utf8");
