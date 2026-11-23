@@ -17,6 +17,19 @@ import { getDriveKy, refreshAccessToken } from "./ky";
 
 const CLOCK_SKEW_BUFFER_MS = 60_000;
 
+export const isPathLocallyDeleted = (
+	path: string,
+	operations: Record<string, "create" | "delete" | "modify">
+): boolean => {
+	if (operations[path] === "delete") return true;
+	const parts = path.split("/");
+	for (let i = 1; i < parts.length; i++) {
+		const ancestor = parts.slice(0, i).join("/");
+		if (operations[ancestor] === "delete") return true;
+	}
+	return false;
+};
+
 export const hasPreservedDescendants = (
 	folder: TFolder,
 	deletionPathSet: Set<string>,
@@ -87,6 +100,14 @@ export const pull = async (
 		);
 
 		const recentlyModified = allDriveFiles.filter((f) => {
+			const mappedPath = t.settings.driveIdToPath[f.id];
+			if (
+				mappedPath &&
+				isPathLocallyDeleted(mappedPath, t.settings.operations)
+			) {
+				return false;
+			}
+
 			const notInMapping = !(f.id in t.settings.driveIdToPath);
 			const inChangesFeed = changedFileIds.has(f.id);
 			const modifiedAfterSync =
@@ -97,7 +118,6 @@ export const pull = async (
 				return true;
 			}
 
-			const mappedPath = t.settings.driveIdToPath[f.id];
 			if (!mappedPath) {
 				return true;
 			}
@@ -269,6 +289,14 @@ export const pull = async (
 				for (const batch of batches) {
 					await Promise.all(
 						batch.map(async (folder) => {
+							if (
+								isPathLocallyDeleted(
+									folder,
+									t.settings.operations
+								)
+							) {
+								return;
+							}
 							delete t.settings.operations[folder];
 							if (
 								vault.getFolderByPath(folder) ||
@@ -308,7 +336,8 @@ export const pull = async (
 					const resolvedPath = resolvePath(file);
 					if (
 						!resolvedPath ||
-						isPluginDataJson(resolvedPath, vault.configDir)
+						isPluginDataJson(resolvedPath, vault.configDir) ||
+						isPathLocallyDeleted(resolvedPath, t.settings.operations)
 					) {
 						return;
 					}

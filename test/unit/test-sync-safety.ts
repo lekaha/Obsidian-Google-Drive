@@ -56,7 +56,9 @@ async function main() {
 		areArrayBuffersEqual,
 		buildConflictPath,
 	} = await import("../../helpers/drive");
-	const { hasPreservedDescendants } = await import("../../helpers/pull");
+	const { hasPreservedDescendants, isPathLocallyDeleted } = await import(
+		"../../helpers/pull"
+	);
 	const { findUntrackedLocalPaths } = await import("../../helpers/push");
 
 	// 1. Drive query escaping
@@ -164,7 +166,26 @@ async function main() {
 		"Folder containing a nested non-deleted file MUST be preserved"
 	);
 
-	// 6. Untracked local file discovery
+	// 6. Local deletion must not be resurrected by pull
+	assert.equal(
+		isPathLocallyDeleted("deleted.md", { "deleted.md": "delete" }),
+		true,
+		"Directly deleted file should be skipped during pull"
+	);
+	assert.equal(
+		isPathLocallyDeleted("deleted-folder/child.md", {
+			"deleted-folder": "delete",
+		}),
+		true,
+		"Child of locally deleted folder should be skipped during pull"
+	);
+	assert.equal(
+		isPathLocallyDeleted("kept.md", { "deleted.md": "delete" }),
+		false,
+		"Unrelated file should not be marked locally deleted"
+	);
+
+	// 7. Untracked local file discovery
 	const untracked = findUntrackedLocalPaths(
 		[
 			"/",
